@@ -47,9 +47,10 @@ class Indicator extends StatefulWidget {
 class _IndicatorState extends State<Indicator> {
   double bearing = 0.0;
   AccelerometerEvent? accelerationData;
-  MagnetometerEvent? magnetData;
   late StreamSubscription<AccelerometerEvent> _accelerometerSubscription;
   late StreamSubscription<MagnetometerEvent> _magnetometerSubscription;
+  final List<List<double>> _magnetBuffer = [];
+  static const int _magnetBufferSize = 10;
 
   @override
   void initState() {
@@ -69,83 +70,54 @@ class _IndicatorState extends State<Indicator> {
         accelerometerEventStream(
           samplingPeriod: SensorInterval.gameInterval,
         ).listen((AccelerometerEvent event) {
-          // print('Accelerometer event: $event');
-          setState(() {
-            accelerationData = event;
-          });
+          accelerationData = event;
         });
     _magnetometerSubscription =
         magnetometerEventStream(
           samplingPeriod: SensorInterval.gameInterval,
         ).listen((MagnetometerEvent event) {
-          // print('Magnetometer event: $event');
+          _addMagnetSample(event);
           setState(() {
-            magnetData = event;
             bearing = calculateBearing();
           });
         });
   }
 
   double calculateBearing() {
-    if (accelerationData == null || magnetData == null) {
-      print('Sensor data not available yet');
+    if (accelerationData == null) {
       return 0.0;
     }
-    return aproxBearing();
-    // TODO: Math needs work
-    // final ax = accelerationData!.x;
-    // final ay = accelerationData!.y;
-    // final az = accelerationData!.z;
-    // final mx = magnetData!.x;
-    // final my = magnetData!.y;
-    // final mz = magnetData!.z;
-
-    // // Normalize accelerometer (gravity) vector
-    // final normA = math.sqrt(ax * ax + ay * ay + az * az);
-    // if (normA == 0) return aproxBearing();
-    // final nx = ax / normA;
-    // final ny = ay / normA;
-    // final nz = az / normA;
-
-    // // Normalize magnetometer vector
-    // final normM = math.sqrt(mx * mx + my * my + mz * mz);
-    // if (normM == 0) return aproxBearing();
-    // final mxn = mx / normM;
-    // final myn = my / normM;
-    // final mzn = mz / normM;
-
-    // // Compute east = M x gravity
-    // final ex = myn * nz - mzn * ny;
-    // final ey = mzn * nx - mxn * nz;
-    // final ez = mxn * ny - myn * nx;
-    // final normE = math.sqrt(ex * ex + ey * ey + ez * ez);
-    // if (normE == 0) return aproxBearing();
-    // final exn = ex / normE;
-    // final eyn = ey / normE;
-    // final ezn = ez / normE;
-
-    // // Compute north = gravity x east
-    // final nxv = ny * ezn - nz * eyn;
-    // final nyv = nz * exn - nx * ezn;
-    // final nzv = nx * eyn - ny * exn;
-
-    // // Heading: atan2(east dot magnetic, north dot magnetic)
-    // final double heading = math.atan2(
-    //   exn * mxn + eyn * myn + ezn * mzn,
-    //   nxv * mxn + nyv * myn + nzv * mzn,
-    // );
-
-    // // Normalize to 0..2pi
-    // return (heading + 2 * math.pi) % (2 * math.pi);
+    final avg = _getSmoothedMagnetSample();
+    final double x = avg[0];
+    final double y = avg[1];
+    final double a = math.atan2(x, y);
+    return a - math.pi / 2;
   }
 
-  double aproxBearing() {
-    return math.atan2(magnetData!.y, magnetData!.x);
+  void _addMagnetSample(MagnetometerEvent e) {
+    _magnetBuffer.add([e.x, e.y, e.z]);
+    if (_magnetBuffer.length > _magnetBufferSize) _magnetBuffer.removeAt(0);
+  }
+
+  List<double> _getSmoothedMagnetSample() {
+    if (_magnetBuffer.isEmpty) {
+      return [0.0, 0.0, 0.0];
+    }
+    double sx = 0, sy = 0, sz = 0;
+    for (int i = 0; i < _magnetBuffer.length; i++) {
+      sx += _magnetBuffer[i][0];
+      sy += _magnetBuffer[i][1];
+      sz += _magnetBuffer[i][2];
+    }
+    return [
+      sx / _magnetBuffer.length,
+      sy / _magnetBuffer.length,
+      sz / _magnetBuffer.length,
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
-    // double bearing = calculateBearing();
     return Stack(
       children: [
         CustomPaint(
@@ -178,6 +150,7 @@ class IndicatorPainter extends CustomPainter {
   final double bubbleX;
   final double bubbleY;
   final double bearing;
+
   @override
   void paint(Canvas canvas, Size size) {
     paintCompassTicks(canvas, size);
@@ -189,16 +162,9 @@ class IndicatorPainter extends CustomPainter {
     final Paint paint = Paint()
       ..color = Colors.red.shade400
       ..style = PaintingStyle.fill;
-    // recommended: radius inside the dial's padding
     final double r = math.min(size.width, size.height) / 2 - 20;
-
-    // If `bearing = atan2(event.y, event.x)` (0 = +X, CCW positive):
-    final double angle = math.pi / 2 - bearing;
-
-    // convert to screen offsets (canvas y goes down, so invert sin)
-    final double dx = math.cos(angle) * r;
-    final double dy = -math.sin(angle) * r;
-
+    final double dx = math.cos(bearing) * r;
+    final double dy = math.sin(bearing) * r;
     final center = Offset(size.width / 2 + dx, size.height / 2 + dy);
     canvas.drawCircle(center, 8.0, paint);
   }
@@ -207,10 +173,8 @@ class IndicatorPainter extends CustomPainter {
     final Paint paint = Paint()
       ..color = Colors.green.shade600
       ..style = PaintingStyle.fill;
-
     final center = Offset(size.width / 2, size.height / 2);
     final radius = 20.0;
-
     canvas.drawCircle(center, radius, paint);
   }
 
